@@ -11,11 +11,11 @@
 ```bash
 python3 blindtest.py collect runs/reference --reference --per-family \
   --prompts llm_blindtest/fingerprint_prompts.json --repeats 3 \
-  --workers 4 --max-tokens 4096 --timeout 90
+  --workers 4 --min-interval 2 --fail-fast 5 --max-tokens 4096 --timeout 90
 python3 blindtest.py train runs/reference --output runs/fingerprint.json
 python3 blindtest.py collect runs/test --per-family \
   --prompts llm_blindtest/fingerprint_prompts.json --trials 3 \
-  --workers 4 --max-tokens 4096 --timeout 90
+  --workers 4 --min-interval 2 --fail-fast 5 --max-tokens 4096 --timeout 90
 python3 blindtest.py predict runs/test --fingerprint runs/fingerprint.json \
   --min-samples 6 --output runs/test/guesses.json
 python3 blindtest.py submit runs/test --file runs/test/guesses.json
