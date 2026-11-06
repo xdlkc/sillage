@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vestige.core import BlindtestError, collect, digest, read_json, reveal, submit, write_json
-from vestige.fingerprint import classify, fit, load_reference, predict_command, train_command
+from sillage.core import BlindtestError, collect, digest, read_json, reveal, submit, write_json
+from sillage.fingerprint import classify, fit, load_reference, predict_command, train_command
 
 
 class SampleClient:

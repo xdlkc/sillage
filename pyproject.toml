@@ -1,16 +1,16 @@
 [project]
-name = "vestige"
+name = "sillage"
 version = "0.2.0"
 description = "Blinded model-family identification through a pi provider"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-vestige = "vestige.cli:main"
+sillage = "sillage.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]
-vestige = ["prompts.json", "fingerprint_prompts.json"]
+sillage = ["prompts.json", "fingerprint_prompts.json"]

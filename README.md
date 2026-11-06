@@ -1,4 +1,4 @@
-# Vestige
+# Sillage
 
 隐藏模型名称，从回答判断模型家族，再揭晓并统计命中率。使用 pi agent 的现有 provider，无第三方 Python 运行依赖。
 
@@ -9,17 +9,17 @@
 先采集有标签参考回答，再对独立调用生成的匿名答卷自动分类。识别器只比较最终文本，不使用网关元数据，也不要求候选一一配对。
 
 ```bash
-python3 -m vestige collect runs/reference --reference --per-family \
-  --prompts vestige/fingerprint_prompts.json --repeats 3 \
+python3 -m sillage collect runs/reference --reference --per-family \
+  --prompts sillage/fingerprint_prompts.json --repeats 3 \
   --workers 4 --min-interval 2 --fail-fast 5 --max-tokens 4096 --timeout 90
-python3 -m vestige train runs/reference --output runs/fingerprint.json
-python3 -m vestige collect runs/test --per-family \
-  --prompts vestige/fingerprint_prompts.json --trials 3 \
+python3 -m sillage train runs/reference --output runs/fingerprint.json
+python3 -m sillage collect runs/test --per-family \
+  --prompts sillage/fingerprint_prompts.json --trials 3 \
   --workers 4 --min-interval 2 --fail-fast 5 --max-tokens 4096 --timeout 90
-python3 -m vestige predict runs/test --fingerprint runs/fingerprint.json \
+python3 -m sillage predict runs/test --fingerprint runs/fingerprint.json \
   --min-samples 6 --output runs/test/guesses.json
-python3 -m vestige submit runs/test --file runs/test/guesses.json
-python3 -m vestige reveal runs/test
+python3 -m sillage submit runs/test --file runs/test/guesses.json
+python3 -m sillage reveal runs/test
 ```
 
 `train` 输出指纹 SHA-256。正式验收时，应在采样前记录该值，并在 `predict` 加 `--expect-hash <SHA256>`。指纹文件不可原地覆盖；测试失败后改进版本，必须使用新采样的验收集。
@@ -37,19 +37,19 @@ python3 -m vestige reveal runs/test
 需要 Python 3.11+。默认读取 `~/.pi/agent/models.json` 的 `hub` provider。
 
 ```bash
-cd ~/Code/vestige
-python3 -m vestige models
-python3 -m vestige collect runs/demo --per-family --limit-prompts 4 --dry-run
-python3 -m vestige collect runs/demo --per-family --limit-prompts 4
-python3 -m vestige view runs/demo
-python3 -m vestige ballot runs/demo --output runs/demo/guesses.json
+cd ~/Code/sillage
+python3 -m sillage models
+python3 -m sillage collect runs/demo --per-family --limit-prompts 4 --dry-run
+python3 -m sillage collect runs/demo --per-family --limit-prompts 4
+python3 -m sillage view runs/demo
+python3 -m sillage ballot runs/demo --output runs/demo/guesses.json
 ```
 
 编辑 `guesses.json`，填写评审者、判断方法和每个匿名模型的家族猜测。不确定就填 `unknown`。`confidence` 可留 `null`；手填置信度不是经过校准的概率。`model` 可选，填具体候选 ID 时必须与家族一致。
 
 ```bash
-python3 -m vestige submit runs/demo --file runs/demo/guesses.json
-python3 -m vestige reveal runs/demo
+python3 -m sillage submit runs/demo --file runs/demo/guesses.json
+python3 -m sillage reveal runs/demo
 ```
 
 `submit` 锁定猜测，之后不能修改。`reveal` 同时生成 `report.json` 和 `report.md`。
@@ -58,7 +58,7 @@ python3 -m vestige reveal runs/demo
 
 - `--per-family`：每个家族取配置中的第一个模型。它不代表该家族的最强或最便宜版本。
 - `--models ID ID ...`：指定候选。省略两者时采集全部配置模型。
-- `--prompts FILE`：自定义题库，格式见 `vestige/prompts.json`。不应含身份自报、品牌知识问答或私有数据。
+- `--prompts FILE`：自定义题库，格式见 `sillage/prompts.json`。不应含身份自报、品牌知识问答或私有数据。
 - `--repeats N`：每道题重复次数。每次是全新请求，没有会话历史。
 - `--temperature FLOAT`：默认不发送，使用各服务端默认值。跨模型默认值可能不同。需要控制变量时显式传入各端都支持的值。
 - `--max-tokens N`：默认 2048。部分模型把推理也计入该预算；截断或只有推理、没有最终回答时样本无效。
