@@ -13,6 +13,7 @@ import re
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -184,9 +185,10 @@ def select_models(provider, ids=None, per_family=False):
 
 
 def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperature=None,
-            timeout=90, progress=print, client_factory=Client, workers=1, trials=1, reference=False):
+            timeout=90, progress=print, client_factory=Client, workers=1, trials=1, reference=False,
+            min_interval=0, fail_fast=0):
     run = Path(run)
-    if not models or not prompts or repeats < 1 or max_tokens < 1 or workers < 1 or trials < 1:
+    if not models or not prompts or repeats < 1 or max_tokens < 1 or workers < 1 or trials < 1 or min_interval < 0 or fail_fast < 0:
         raise BlindtestError("模型、题目不能为空，重复次数和 token 上限必须为正数")
     if len({p["id"] for p in prompts}) != len(prompts):
         raise BlindtestError("题目 ID 必须唯一")
@@ -206,6 +208,7 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
                 "mapping_commitment": commitment, "endpoint_count": len(mapping), "prompt_count": len(prompts),
                 "repeats": repeats, "max_tokens": max_tokens, "temperature": temperature,
                 "trials": trials, "workers": workers, "purpose": "reference" if reference else "blind",
+                "min_interval": min_interval, "fail_fast": fail_fast,
                 "system_prompt": SYSTEM, "truth_source": "pi gateway route labels; not independently verified model identity",
                 "planned_requests": len(mapping) * len(prompts) * repeats}
     write_json(run / "manifest.json", manifest)
@@ -217,9 +220,23 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
     grouped = {a: [] for a in mapping}
     with locked(run):
         client = client_factory(provider, timeout)
+        gate = threading.Lock()
+        abort = threading.Event()
+        next_start = 0.0
+        consecutive_errors = 0
         def execute(job):
+            nonlocal next_start
             alias, prompt, repeat = job
-            return job, client.complete(mapping[alias], prompt["text"], max_tokens, temperature)
+            with gate:
+                if abort.is_set():
+                    return job, {"ok": False, "error": "stopped_after_errors", "attempted": False}
+                delay = next_start-time.monotonic()
+                if delay > 0:
+                    abort.wait(delay)
+                if abort.is_set():
+                    return job, {"ok": False, "error": "stopped_after_errors", "attempted": False}
+                next_start = time.monotonic()+min_interval
+            return job, {**client.complete(mapping[alias], prompt["text"], max_tokens, temperature), "attempted": True}
         def results():
             if workers == 1:
                 yield from map(execute, jobs)
@@ -229,6 +246,11 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
                     for future in as_completed(futures):
                         yield future.result()
         for i, ((alias, prompt, repeat), result) in enumerate(results(), 1):
+            if result.get("attempted", True):
+                consecutive_errors = 0 if result["ok"] else consecutive_errors + 1
+                if fail_fast and consecutive_errors >= fail_fast and not abort.is_set():
+                    abort.set()
+                    progress(f"连续失败达到 {fail_fast} 次，停止新请求；未执行样本仍计入计划分母。")
             private["results"].append({"alias": alias, "prompt_id": prompt["id"], "repeat": repeat, **result})
             write_json(run / "private" / "data.json", private)
             sample = {"prompt_id": prompt["id"], "prompt": prompt["text"], "repeat": repeat, "ok": result["ok"]}
@@ -243,7 +265,9 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
             public["endpoints"].append({"alias": a, "samples": grouped[a]})
         write_json(run / "blind.json", public)
         manifest.update(state="collected", public_digest=digest(public),
-                        successful_requests=sum(r["ok"] for r in private["results"]))
+                        successful_requests=sum(r["ok"] for r in private["results"]),
+                        attempted_requests=sum(r.get("attempted", True) for r in private["results"]),
+                        stopped_after_errors=abort.is_set())
         if reference:
             examples = [{"model": assignments[e["alias"]]["model"],
                          "family": assignments[e["alias"]]["family"],
