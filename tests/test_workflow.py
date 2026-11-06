@@ -63,6 +63,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(r["eligible_endpoints"], 2)
         self.assertEqual(r["total_endpoints"], 3)
         self.assertEqual(r["family_accuracy"], 1)
+        self.assertAlmostEqual(r["overall_accuracy"], 2/3)
         self.assertEqual(r["successful_requests"], 2)
         self.assertEqual(reveal(self.run), r)
 

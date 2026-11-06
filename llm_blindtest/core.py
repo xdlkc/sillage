@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime as dt
 import fcntl
 import hashlib
@@ -183,9 +184,9 @@ def select_models(provider, ids=None, per_family=False):
 
 
 def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperature=None,
-            timeout=90, progress=print, client_factory=Client):
+            timeout=90, progress=print, client_factory=Client, workers=1, trials=1, reference=False):
     run = Path(run)
-    if not models or not prompts or repeats < 1 or max_tokens < 1:
+    if not models or not prompts or repeats < 1 or max_tokens < 1 or workers < 1 or trials < 1:
         raise BlindtestError("模型、题目不能为空，重复次数和 token 上限必须为正数")
     if len({p["id"] for p in prompts}) != len(prompts):
         raise BlindtestError("题目 ID 必须唯一")
@@ -194,29 +195,40 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
     run.mkdir(parents=True, mode=0o700)
     (run / "private").mkdir(mode=0o700)
     rng = secrets.SystemRandom()
-    shuffled = list(models)
+    shuffled = list(models) * trials
     rng.shuffle(shuffled)
-    mapping = {f"M-{secrets.token_hex(3).upper()}": m for m in shuffled}
+    mapping = {f"M-{secrets.token_hex(8).upper()}": m for m in shuffled}
     # Mapping committed before generation; no API credentials in it.
     assignments = {a: {"model": m["id"], "family": family(m["id"])} for a, m in mapping.items()}
     private = {"salt": secrets.token_hex(32), "assignments": assignments, "results": []}
     commitment = digest({"salt": private["salt"], "assignments": assignments})
     manifest = {"version": 1, "state": "collecting", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "mapping_commitment": commitment, "endpoint_count": len(models), "prompt_count": len(prompts),
+                "mapping_commitment": commitment, "endpoint_count": len(mapping), "prompt_count": len(prompts),
                 "repeats": repeats, "max_tokens": max_tokens, "temperature": temperature,
+                "trials": trials, "workers": workers, "purpose": "reference" if reference else "blind",
                 "system_prompt": SYSTEM, "truth_source": "pi gateway route labels; not independently verified model identity",
-                "planned_requests": len(models) * len(prompts) * repeats}
+                "planned_requests": len(mapping) * len(prompts) * repeats}
     write_json(run / "manifest.json", manifest)
     write_json(run / "private" / "data.json", private)
     jobs = [(a, p, r) for a in mapping for p in prompts for r in range(1, repeats + 1)]
     rng.shuffle(jobs)
     public = {"candidate_families": sorted({family(m["id"]) for m in models}),
-              "candidate_models": sorted(m["id"] for m in models), "endpoints": []}
+              "candidate_models": sorted({m["id"] for m in models}), "endpoints": []}
     grouped = {a: [] for a in mapping}
     with locked(run):
         client = client_factory(provider, timeout)
-        for i, (alias, prompt, repeat) in enumerate(jobs, 1):
-            result = client.complete(mapping[alias], prompt["text"], max_tokens, temperature)
+        def execute(job):
+            alias, prompt, repeat = job
+            return job, client.complete(mapping[alias], prompt["text"], max_tokens, temperature)
+        def results():
+            if workers == 1:
+                yield from map(execute, jobs)
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(execute, job) for job in jobs]
+                    for future in as_completed(futures):
+                        yield future.result()
+        for i, ((alias, prompt, repeat), result) in enumerate(results(), 1):
             private["results"].append({"alias": alias, "prompt_id": prompt["id"], "repeat": repeat, **result})
             write_json(run / "private" / "data.json", private)
             sample = {"prompt_id": prompt["id"], "prompt": prompt["text"], "repeat": repeat, "ok": result["ok"]}
@@ -232,6 +244,16 @@ def collect(run, provider, models, prompts, repeats=1, max_tokens=2048, temperat
         write_json(run / "blind.json", public)
         manifest.update(state="collected", public_digest=digest(public),
                         successful_requests=sum(r["ok"] for r in private["results"]))
+        if reference:
+            examples = [{"model": assignments[e["alias"]]["model"],
+                         "family": assignments[e["alias"]]["family"],
+                         "prompt_id": s["prompt_id"], "prompt": s["prompt"], "answer": s["answer"]}
+                        for e in public["endpoints"] for s in e["samples"] if s["ok"]]
+            dataset = {"kind": "labeled_reference", "examples": examples,
+                       "settings": {k: manifest[k] for k in ["max_tokens", "temperature", "system_prompt"]},
+                       "candidate_models": public["candidate_models"]}
+            write_json(run / "reference.json", dataset)
+            manifest.update(state="reference", reference_digest=digest(dataset))
         write_json(run / "manifest.json", manifest)
     return manifest
 
@@ -326,6 +348,7 @@ def reveal(run):
                   "planned_requests": manifest["planned_requests"], "successful_requests": manifest["successful_requests"],
                   "eligible_endpoints": n, "total_endpoints": len(rows), "family_correct": correct,
                   "family_accuracy": correct/n if n else None, "guessed_endpoints": answered,
+                  "overall_accuracy": correct/len(rows) if rows else None,
                   "guess_coverage": answered/n if n else None, "accuracy_when_guessed": correct/answered if answered else None,
                   "uniform_random_baseline": 1/len(public["candidate_families"]),
                   "majority_baseline": max(counts.values())/n if n else None,
@@ -342,6 +365,7 @@ def reveal(run):
 def report_markdown(r):
     acc = f"{r['family_accuracy']:.1%}" if r["family_accuracy"] is not None else "不可评分"
     lines = ["# 模型身份盲测", "", f"家族命中：{r['family_correct']}/{r['eligible_endpoints']}（{acc}）。",
+             f"全部计划答卷命中率：{r['family_correct']}/{r['total_endpoints']}（{r.get('overall_accuracy', 0):.1%}），无效或弃答也计入分母。",
              f"有效请求：{r['successful_requests']}/{r['planned_requests']}；可评分端点：{r['eligible_endpoints']}/{r['total_endpoints']}。",
              f"均匀随机猜测基线：{r['uniform_random_baseline']:.1%}。", "", r["limitation"], "",
              "| 匿名编号 | 网关模型标签 | 猜测家族 | 命中 | 有效样本 |", "|---|---|---|---|---|"]

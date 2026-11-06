@@ -4,6 +4,34 @@
 
 这里的“答案”是 pi 配置的路由标签。即使命中率很高，也不能证明中转上游实际运行了该模型。
 
+## 自动识别（v0.2）
+
+先采集有标签参考回答，再对独立调用生成的匿名答卷自动分类。识别器只比较最终文本，不使用网关元数据，也不要求候选一一配对。
+
+```bash
+python3 blindtest.py collect runs/reference --reference --per-family \
+  --prompts llm_blindtest/fingerprint_prompts.json --repeats 3 \
+  --workers 4 --max-tokens 4096 --timeout 90
+python3 blindtest.py train runs/reference --output runs/fingerprint.json
+python3 blindtest.py collect runs/test --per-family \
+  --prompts llm_blindtest/fingerprint_prompts.json --trials 3 \
+  --workers 4 --max-tokens 4096 --timeout 90
+python3 blindtest.py predict runs/test --fingerprint runs/fingerprint.json \
+  --min-samples 6 --output runs/test/guesses.json
+python3 blindtest.py submit runs/test --file runs/test/guesses.json
+python3 blindtest.py reveal runs/test
+```
+
+`train` 输出指纹 SHA-256。正式验收时，应在采样前记录该值，并在 `predict` 加 `--expect-hash <SHA256>`。指纹文件不可原地覆盖；测试失败后改进版本，必须使用新采样的验收集。
+
+每组匿名答卷是一个模型的一套探针回答。`--trials 3` 对每个模型采集3组独立答卷，因此8个模型有24个计分单位，而不是把192个回答算成192次模型识别。所有计划答卷均进入验收分母；失败或弃答算未命中。对24组答卷，命中20组才超过80%。
+
+算法按题目建立字符2–4元组 TF-IDF 向量。每题与各模型的参考回答比较余弦相似度，再按参考集留一法得到的区分能力加权汇总。每个模型、每道保留的探针至少需要2份有效参考回答。示例采集3份以容纳偶发失败。所有示例请求均不发送温度参数，保留各端默认值。不满足条件的探针会在训练输出中明确列出。预测默认至少需要6道不同的有效探针，否则弃答。
+
+这是一种固定探针的输出指纹识别。训练和测试使用相同的探针正文，但调用和回答独立。它检验同一网关、候选集合、模型版本、系统提示和采样参数下的重复识别能力，不代表未见过的问题、任意文本或新模型版本也有同等准确率。重复调用的结果可能相关，不能把24组答卷视为24种不同模型。
+
+`reference.json` 有明确标签，仅用于训练。训练不接受普通盲测场次。预测可以在完全没有 `private/` 文件的环境中完成。候选集合、探针正文、温度、token上限与系统提示不一致时，工具拒绝匹配，避免把不同实验混为一谈。
+
 ## 开始
 
 需要 Python 3.11+。默认读取 `~/.pi/agent/models.json` 的 `hub` provider。
@@ -35,6 +63,9 @@ python3 blindtest.py reveal runs/demo
 - `--temperature FLOAT`：默认不发送，使用各服务端默认值。跨模型默认值可能不同。需要控制变量时显式传入各端都支持的值。
 - `--max-tokens N`：默认 2048。部分模型把推理也计入该预算；截断或只有推理、没有最终回答时样本无效。
 - `--timeout SECONDS`：单请求超时，默认 90。串行请求；不静默重试，不自动改变参数。
+- `--workers N`：并发请求数，默认1，范围1–16。各请求仍无会话历史。
+- `--trials N`：每个模型生成N组独立匿名答卷，每组都有完整探针集合。
+- `--reference`：明确生成有标签参考样本，不把该场次计入盲测成绩。
 - `--config FILE --provider NAME`：放在子命令前，可切换 pi 配置。
 
 默认题库 8 题，覆盖歧义、多语言、逻辑、格式、代码、未知知识、改写和反例。首次可用 4 题检查工具。要评估泛化，应另建题库和独立场次，不应把首次揭晓结果再当盲测。
@@ -55,6 +86,7 @@ python3 blindtest.py reveal runs/demo
 ## 指标解释
 
 - 家族准确率：正确猜测 / 至少有一个有效回答的端点。`unknown` 算未命中。
+- 验收使用 `overall_accuracy`：正确猜测 / 全部计划答卷，全失败答卷也保留在分母中。
 - 猜测覆盖率：作出明确猜测的有效端点比例。
 - 具体模型命中单独统计；只猜家族时不算具体模型命中。
 - 请求成功率与端点覆盖率独立展示。全失败端点不计入准确率，部分失败会降低证据量。
@@ -70,3 +102,5 @@ python3 -m unittest discover -s tests -v
 ```
 
 测试覆盖匿名输出、身份词处理、接口参数、错误与截断、unknown 计分、失败覆盖率、先提交后揭晓、重复提交和记录篡改检测。
+
+自动识别测试还覆盖：不读取私有映射、元数据不影响预测、不强制一一配对、缺失探针弃答、参考集和盲测集隔离、冻结摘要校验、并发采样和多组答卷计分。
