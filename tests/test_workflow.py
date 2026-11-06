@@ -6,7 +6,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_blindtest.core import (BlindtestError, Client, ballot, collect, family, read_json,
+from vestige.core import (BlindtestError, Client, ballot, collect, family, read_json,
                                redact, resolve, reveal, submit, write_json)
 
 

@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from llm_blindtest.core import collect, read_json
+from vestige.core import collect, read_json
 
 
 class TimedClient:

@@ -9,7 +9,7 @@ from .fingerprint import train_command, predict_command
 
 
 def main():
-    parser = argparse.ArgumentParser(description="pi hub 模型身份盲测；不等同于来源验真")
+    parser = argparse.ArgumentParser(prog="vestige", description="Vestige — pi hub 模型身份盲测；不等同于来源验真")
     parser.add_argument("--config", default="~/.pi/agent/models.json")
     parser.add_argument("--provider", default="hub")
     sub = parser.add_subparsers(dest="command", required=True)
